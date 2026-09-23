@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="banner.jpg" alt="AnimeciX Downloader Banner" width="100%">
+  <img src="banner1.jpg" alt="AnimeciX Downloader Banner" width="100%">
   
   <h1>🌟 AnimeciX Downloader</h1>
   
