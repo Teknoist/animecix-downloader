@@ -4,6 +4,10 @@ import os
 import time
 import subprocess
 import urllib.parse
+
+# Fix Windows console encoding
+sys.stdout.reconfigure(encoding='utf-8')
+
 from rich.console import Console
 from playwright.sync_api import sync_playwright
 
