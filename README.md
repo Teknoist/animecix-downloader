@@ -27,36 +27,29 @@
 - **🕵️ Gizli İframe ve Network Dinleme**: AnimeciX gibi Angular ile yazılmış ve videoları gizli M3U8/MP4 iframelerinde tutan sistemleri Playwright ile tam bir tarayıcı simülasyonu yaratarak (Headless) atlatır.
 - **🔄 Otomatik Fansub Atlatma**: "SeiCode", "Eternal", "TenseiSubs" gibi çeviri butonlarını analiz edip en stabil çalışan video sunucusuna (örn: tau-video.xyz) otomatik bağlanır.
 
-## 🚀 Kurulum
+## 🚀 Kurulum ve Kullanım
 
-Aracı kullanmaya başlamak çok basittir. İşletim sisteminizde [Python 3.8+](https://www.python.org/) kurulu olduğundan emin olun.
+Kullanmak için iki farklı yönteminiz var: İster **Tek Tıkla**, ister **Komut Satırı** üzerinden çalıştırın.
 
-1. **Projeyi indirin:**
-   ```bash
-   git clone https://github.com/Teknoist/animecix-downloader.git
-   cd animecix-downloader
-   ```
+### Yöntem 1: Tek Tıkla Kullanım (Windows İçin En Kolay Yöntem)
 
-2. **Gerekli paketleri kurun:**
+Hiçbir kod veya komut yazmanıza gerek yok!
+1. Projeyi bilgisayarınıza indirin (`Code > Download ZIP`).
+2. Klasörün içindeki `baslat.bat` dosyasına çift tıklayın.
+3. Açılan siyah ekranda eksik kurulumlar otomatik yapılır ve size sadece linki yapıştırmak kalır!
+
+### Yöntem 2: Geliştiriciler İçin Komut Satırı
+
+1. **Gerekli paketleri kurun:**
    ```bash
    pip install -r requirements.txt
-   ```
-
-3. **Playwright Tarayıcı Motorunu indirin:**
-   Arka planda sayfa analizleri için ufak bir Chromium tarayıcıya ihtiyaç vardır:
-   ```bash
    playwright install chromium
    ```
 
-## 🎮 Kullanım Rehberi
-
-Terminal veya Komut İstemini (CMD) açarak uygulamayı çalıştırın. İstediğiniz bir dizinin sezon veya spesifik bir bölüm linkini yapıştırabilirsiniz.
-
-### Temel Kullanım
-
-```bash
-python animecix_dl.py "https://animecix.tv/titles/11374/tensei-shitara-dai-nana-ouji-datta-node,-kimamani-majutsu-wo-kiwamemasu/season/2"
-```
+2. **Kullanım:**
+   ```bash
+   python animecix_dl.py "LİNK"
+   ```
 
 Program size 3 seçenek sunacaktır:
 ```text
