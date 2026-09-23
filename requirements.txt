@@ -1,0 +1,4 @@
+playwright
+yt-dlp
+beautifulsoup4
+rich
