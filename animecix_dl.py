@@ -17,50 +17,62 @@ from playwright.sync_api import sync_playwright
 
 console = Console()
 
-def get_best_video_url(p, iframe_url):
+def get_best_video_from_api(iframe_url):
     """
-    Iframe adresinden en yüksek kalitedeki doğrudan video bağlantısını çeker.
-    Öncelikle doğrudan API sorgusu yapar (1080p garantisi için), 
-    gerekirse Playwright ile ağ trafiğini dinler.
+    TauVideo iframe adresinden en yüksek kalitedeki videoyu API ile çeker.
+    Eğer geçerli link varsa (1080p > 720p > 480p) döner, yoksa None döner.
     """
-    # 1. TauVideo API Yöntemi (En hızlı ve en yüksek kaliteyi verir)
-    if "tau-video" in iframe_url:
-        match = re.search(r'embed/([a-zA-Z0-9]+)\?vid=([a-zA-Z0-9]+)', iframe_url)
-        if match:
-            embed_id, vid = match.group(1), match.group(2)
-            api_url = f"https://tau-video.xyz/api/video/{embed_id}?vid={vid}"
-            try:
-                req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = json.loads(resp.read().decode('utf-8'))
-                    urls = data.get("urls", [])
-                    if urls:
-                        def quality_key(item):
-                            lbl = item.get('label', '')
-                            num = re.findall(r'\d+', lbl)
-                            return int(num[0]) if num else 0
-                        sorted_urls = sorted(urls, key=quality_key, reverse=True)
-                        best = sorted_urls[0]
-                        console.print(f"[bold green]En yüksek kalite seçildi:[/bold green] [yellow]{best.get('label', 'Bilinmeyen')}[/yellow]")
-                        return best.get("url")
-            except Exception as e:
-                console.print(f"[dim]TauVideo API sorgusu başarısız, ağ dinleme deneniyor: {e}[/dim]")
+    if "tau-video" not in iframe_url:
+        return None, None
+        
+    match = re.search(r'embed/([a-zA-Z0-9]+)\?vid=([a-zA-Z0-9]+)', iframe_url)
+    if not match:
+        return None, None
+        
+    embed_id, vid = match.group(1), match.group(2)
+    api_url = f"https://tau-video.xyz/api/video/{embed_id}?vid={vid}"
+    
+    try:
+        req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            urls = data.get("urls", [])
+            if urls:
+                def quality_key(item):
+                    lbl = item.get('label', '')
+                    num = re.findall(r'\d+', lbl)
+                    return int(num[0]) if num else 0
+                sorted_urls = sorted(urls, key=quality_key, reverse=True)
+                best = sorted_urls[0]
+                return best.get("url"), best.get("label", "1080p")
+    except Exception:
+        pass
+        
+    return None, None
 
-    # 2. Ağ Dinleme Yöntemi (Yedek Çözüm)
+def get_video_fallback(p, iframe_url):
+    """
+    API yanıt vermezse tarayıcı ile ağ trafiğini dinleyerek videoyu yakalar.
+    """
     video_urls = []
-    browser = p.chromium.launch(headless=True)
-    page = browser.new_page()
+    browser = p.chromium.launch(
+        headless=True,
+        args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+    )
+    context = browser.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    )
+    page = context.new_page()
     
     def handle_request(request):
         if ".mp4" in request.url or ".m3u8" in request.url:
             if request.url not in video_urls:
                 video_urls.append(request.url)
-            
+                
     page.on("request", handle_request)
     try:
-        page.goto(iframe_url, timeout=30000)
+        page.goto(iframe_url, timeout=25000)
         time.sleep(3)
-        # Oynatma butonlarına tıklayarak akışı tetikle
         for selector in ['button', '.play', '.vjs-big-play-button', 'video']:
             try:
                 el = page.locator(selector).first
@@ -69,10 +81,10 @@ def get_best_video_url(p, iframe_url):
                     break
             except Exception:
                 pass
-        time.sleep(5)
-    except Exception as e:
-        console.print(f"[yellow]Iframe yüklenirken uyarı: {e}[/yellow]")
-    
+        time.sleep(4)
+    except Exception:
+        pass
+        
     browser.close()
     return video_urls[0] if video_urls else None
 
@@ -81,7 +93,6 @@ def extract_metadata_and_links(page, url):
     Sayfa başlığından ve URL'den dizi adını ve sezonu çeker, 
     eğer url bir sezon sayfasıysa bölüm linklerini döndürür.
     """
-    # Eğer doğrudan anime ana linki verildiyse (/titles/123/name), varsayılan olarak /season/1'e git
     if '/titles/' in url and '/season/' not in url and '/episode/' not in url:
         url = url.rstrip('/') + '/season/1'
 
@@ -91,7 +102,6 @@ def extract_metadata_and_links(page, url):
     series_name = "Bilinmeyen_Anime"
     season_name = "Sezon_1"
     
-    # 1. URL parsing
     path_parts = urllib.parse.urlparse(url).path.split('/')
     if 'titles' in path_parts:
         try:
@@ -116,7 +126,6 @@ def extract_metadata_and_links(page, url):
         except Exception:
             pass
 
-    # Dosya sistemi için güvenli isimler
     safe_series = "".join([c for c in series_name if c.isalpha() or c.isdigit() or c in (' ', '-', '_')]).strip()
     safe_season = "".join([c for c in season_name if c.isalpha() or c.isdigit() or c in (' ', '-', '_')]).strip()
     
@@ -132,77 +141,86 @@ def extract_metadata_and_links(page, url):
         
     return safe_series, safe_season, links, is_season_url
 
-def download_episode(p, ep_url, output_dir, ep_num):
+def process_episode(p, page, ep_url, output_dir, ep_num):
     console.print(f"\n[bold cyan]--- Bölüm {ep_num} İşleniyor ---[/bold cyan]")
-    browser = p.chromium.launch(headless=True)
-    page = browser.new_page()
-    page.goto(ep_url)
+    
+    # Zaten indirilmiş mi kontrol et
+    expected_file = os.path.join(output_dir, f"Episode_{int(ep_num):02d}.mp4")
+    if os.path.exists(expected_file) and os.path.getsize(expected_file) > 10 * 1024 * 1024:
+        console.print(f"[bold yellow]Bölüm {ep_num} zaten mevcut ({expected_file}), indirme atlanıyor.[/bold yellow]")
+        return True
+
+    # Bölüm sayfasını aç
+    page.goto(ep_url, timeout=30000)
     time.sleep(4)
     
-    # Dinamik fansub tespiti
-    buttons = page.locator("button").all()
-    fs_buttons = [b for b in buttons if "translate" in b.inner_text()]
+    # Tüm çevirmen / fansub butonlarını tespit et
+    translator_buttons = page.locator(".translator-item, button:has-text('star'), button:has-text('translate')").all()
     
-    target_btn = None
-    preferred = ["SeiCode", "Eternal", "SomeSub", "TenseiSubs", "AprilisSubs", "HolySubs", "Eiflex", "NovZon"]
-    for pref in preferred:
-        for b in fs_buttons:
-            if pref.lower() in b.inner_text().lower():
-                target_btn = b
-                break
-        if target_btn:
-            break
+    target_video_url = None
+    target_quality = "Bilinmeyen"
+    selected_fansub = "Varsayılan"
+    
+    if translator_buttons:
+        console.print(f"[dim]{len(translator_buttons)} adet fansub/çevirmen seçeneği tespit edildi, çalışan kaynak aranıyor...[/dim]")
+        for btn in translator_buttons:
+            try:
+                raw_name = btn.inner_text().replace('\n', ' ').strip()
+                # Temiz isim
+                fs_name = re.sub(r'(translate|play_arrow|star|\d+\.\d+)', '', raw_name).strip()
+                if not fs_name:
+                    fs_name = raw_name
+                    
+                btn.scroll_into_view_if_needed()
+                btn.click(force=True)
+                time.sleep(2.5)
+                
+                # Iframe ara
+                iframe_srcs = page.evaluate("() => Array.from(document.querySelectorAll('iframe')).map(i => i.src)")
+                valid = [s for s in iframe_srcs if "tau-video" in s or "embed" in s]
+                if not valid:
+                    continue
+                    
+                vid_url, quality = get_best_video_from_api(valid[0])
+                if vid_url:
+                    target_video_url = vid_url
+                    target_quality = quality
+                    selected_fansub = fs_name
+                    console.print(f"Fansub seçildi: [green]{selected_fansub}[/green] | Kalite: [bold green]{target_quality}[/bold green]")
+                    break
+            except Exception:
+                continue
+                
+    # Eğer doğrudan API ile bulunamadıysa mevcut iframe üzerinden dene
+    if not target_video_url:
+        iframe_srcs = page.evaluate("() => Array.from(document.querySelectorAll('iframe')).map(i => i.src)")
+        valid = [s for s in iframe_srcs if "tau-video" in s or "embed" in s]
+        if valid:
+            console.print("[yellow]Ağ dinleme modu ile video yakalanıyor...[/yellow]")
+            target_video_url = get_video_fallback(p, valid[0])
+            target_quality = "En İyi"
             
-    if not target_btn and fs_buttons:
-        target_btn = fs_buttons[0]
-        
-    if target_btn:
-        fs_name = target_btn.inner_text().replace('\n', ' ').strip()
-        console.print(f"Fansub seçiliyor: [green]{fs_name}[/green]")
-        try:
-            target_btn.click(force=True)
-            time.sleep(4)
-        except Exception:
-            pass
-    else:
-        console.print("[yellow]Özel fansub butonu bulunamadı, varsayılan kaynak deneniyor...[/yellow]")
-        
-    # Iframe src al
-    iframe_srcs = page.evaluate("() => Array.from(document.querySelectorAll('iframe')).map(i => i.src)")
-    valid_iframes = [src for src in iframe_srcs if "tau-video" in src or "embed" in src]
-    
-    browser.close()
-    
-    if not valid_iframes:
-        console.print(f"[red]Bölüm {ep_num} için uygun video çerçevesi (iframe) bulunamadı.[/red]")
+    if not target_video_url:
+        console.print(f"[red]Bölüm {ep_num} için çalışan bir video kaynağı bulunamadı, atlanıyor.[/red]")
         return False
         
-    iframe_url = valid_iframes[0]
-    console.print(f"Video sunucusu bulundu: [dim]{iframe_url}[/dim]")
+    out_filename = os.path.join(output_dir, f"Episode_{int(ep_num):02d}.%(ext)s")
     
-    # Videoyu en yüksek kalitede çıkar
-    target_url = get_best_video_url(p, iframe_url)
+    cmd = [
+        "python", "-m", "yt_dlp",
+        "-f", "bestvideo+bestaudio/best",
+        "--merge-output-format", "mp4",
+        "-o", out_filename,
+        target_video_url
+    ]
     
-    if target_url:
-        console.print(f"[bold green]Video kaynağı yakalandı![/bold green]")
-        
-        out_filename = os.path.join(output_dir, f"Episode_{int(ep_num):02d}.%(ext)s")
-        
-        # yt-dlp komutu oluştur
-        cmd = [
-            "python", "-m", "yt_dlp",
-            "-f", "bestvideo+bestaudio/best",
-            "--merge-output-format", "mp4",
-            "-o", out_filename,
-            target_url
-        ]
-        
-        console.print(f"[magenta]İndirme başlatılıyor (yt-dlp)...[/magenta]")
-        subprocess.run(cmd)
-        console.print(f"[bold green]Bölüm {ep_num} indirmesi tamamlandı.[/bold green]")
+    console.print(f"[magenta]İndirme başlatılıyor (yt-dlp)...[/magenta]")
+    res = subprocess.run(cmd)
+    if res.returncode == 0:
+        console.print(f"[bold green]Bölüm {ep_num} indirmesi başarıyla tamamlandı![/bold green]")
         return True
     else:
-        console.print(f"[red]Bölüm {ep_num} için video kaynağı çıkarılamadı.[/red]")
+        console.print(f"[red]Bölüm {ep_num} yt-dlp ile indirilirken hata verdi.[/red]")
         return False
 
 def interactive_selection(links):
@@ -255,15 +273,23 @@ def main():
     console.print(f"[bold blue]AnimeciX Downloader Başlatıldı[/bold blue]")
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+        )
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 720}
+        )
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        page = context.new_page()
         
         console.print("Sayfa analiz ediliyor...")
         series_name, season_name, links, is_season_url = extract_metadata_and_links(page, args.url)
-        browser.close()
         
         if not links:
             console.print("[red]Geçerli bir bölüm linki bulunamadı. Lütfen URL'yi kontrol edin.[/red]")
+            browser.close()
             sys.exit(1)
             
         console.print(f"Tespit Edilen Dizi: [bold green]{series_name}[/bold green]")
@@ -274,7 +300,6 @@ def main():
         else:
             links_to_download = links
             
-        # Dizin yapısını oluştur: output / Dizi Adı / Sezon
         base_output = os.path.normpath(args.output)
         target_dir = os.path.join(base_output, series_name, season_name)
         os.makedirs(target_dir, exist_ok=True)
@@ -282,9 +307,14 @@ def main():
         
         for ep_url in links_to_download:
             ep_num = ep_url.split('/episode/')[-1]
-            success = download_episode(p, ep_url, target_dir, ep_num)
+            success = process_episode(p, page, ep_url, target_dir, ep_num)
             if not success:
-                console.print(f"[red]Bölüm {ep_num} indirilirken hata oluştu, atlanıyor...[/red]")
+                console.print(f"[red]Bölüm {ep_num} indirilemedi.[/red]")
+            # Bölümler arası 2 saniye dinlen
+            time.sleep(2)
+            
+        browser.close()
+        console.print("\n[bold green]Tüm işlemler tamamlandı! Keyifli seyirler dileriz.[/bold green]")
 
 if __name__ == "__main__":
     main()
