@@ -4,18 +4,49 @@ import os
 import time
 import subprocess
 import urllib.parse
+import urllib.request
+import json
 import re
 
 # Fix Windows console encoding
 sys.stdout.reconfigure(encoding='utf-8')
 
 from rich.console import Console
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Prompt
 from playwright.sync_api import sync_playwright
 
 console = Console()
 
-def get_mp4_from_iframe(p, iframe_url):
+def get_best_video_url(p, iframe_url):
+    """
+    Iframe adresinden en yüksek kalitedeki doğrudan video bağlantısını çeker.
+    Öncelikle doğrudan API sorgusu yapar (1080p garantisi için), 
+    gerekirse Playwright ile ağ trafiğini dinler.
+    """
+    # 1. TauVideo API Yöntemi (En hızlı ve en yüksek kaliteyi verir)
+    if "tau-video" in iframe_url:
+        match = re.search(r'embed/([a-zA-Z0-9]+)\?vid=([a-zA-Z0-9]+)', iframe_url)
+        if match:
+            embed_id, vid = match.group(1), match.group(2)
+            api_url = f"https://tau-video.xyz/api/video/{embed_id}?vid={vid}"
+            try:
+                req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    urls = data.get("urls", [])
+                    if urls:
+                        def quality_key(item):
+                            lbl = item.get('label', '')
+                            num = re.findall(r'\d+', lbl)
+                            return int(num[0]) if num else 0
+                        sorted_urls = sorted(urls, key=quality_key, reverse=True)
+                        best = sorted_urls[0]
+                        console.print(f"[bold green]En yüksek kalite seçildi:[/bold green] [yellow]{best.get('label', 'Bilinmeyen')}[/yellow]")
+                        return best.get("url")
+            except Exception as e:
+                console.print(f"[dim]TauVideo API sorgusu başarısız, ağ dinleme deneniyor: {e}[/dim]")
+
+    # 2. Ağ Dinleme Yöntemi (Yedek Çözüm)
     video_urls = []
     browser = p.chromium.launch(headless=True)
     page = browser.new_page()
@@ -28,30 +59,43 @@ def get_mp4_from_iframe(p, iframe_url):
     page.on("request", handle_request)
     try:
         page.goto(iframe_url, timeout=30000)
-        time.sleep(6) # Wait for network requests to settle
+        time.sleep(3)
+        # Oynatma butonlarına tıklayarak akışı tetikle
+        for selector in ['button', '.play', '.vjs-big-play-button', 'video']:
+            try:
+                el = page.locator(selector).first
+                if el.is_visible():
+                    el.click(force=True)
+                    break
+            except Exception:
+                pass
+        time.sleep(5)
     except Exception as e:
         console.print(f"[yellow]Iframe yüklenirken uyarı: {e}[/yellow]")
     
     browser.close()
-    return video_urls
+    return video_urls[0] if video_urls else None
 
 def extract_metadata_and_links(page, url):
     """
-    Sayfa başlığından ve URL'den dizi adını ve sezonu kesin olarak çeker, 
+    Sayfa başlığından ve URL'den dizi adını ve sezonu çeker, 
     eğer url bir sezon sayfasıysa bölüm linklerini döndürür.
     """
+    # Eğer doğrudan anime ana linki verildiyse (/titles/123/name), varsayılan olarak /season/1'e git
+    if '/titles/' in url and '/season/' not in url and '/episode/' not in url:
+        url = url.rstrip('/') + '/season/1'
+
     page.goto(url)
     time.sleep(5)
     
     series_name = "Bilinmeyen_Anime"
     season_name = "Sezon_1"
     
-    # 1. URL parsing (Most reliable for AnimeciX)
+    # 1. URL parsing
     path_parts = urllib.parse.urlparse(url).path.split('/')
     if 'titles' in path_parts:
         try:
             idx = path_parts.index('titles')
-            # Extract series slug and prettify
             slug = path_parts[idx + 2]
             series_name = slug.replace('-', ' ').replace(',', '').title()
         except Exception:
@@ -65,7 +109,6 @@ def extract_metadata_and_links(page, url):
         except Exception:
             pass
     elif "/episode/" in url:
-        # Try to extract season from episode URL
         try:
             match = re.search(r'/season/(\d+)/episode/', url)
             if match:
@@ -81,12 +124,10 @@ def extract_metadata_and_links(page, url):
     is_season_url = "/episode/" not in url
     
     if is_season_url:
-        # Sezon sayfası, bölüm linklerini bul
         all_hrefs = page.evaluate("() => Array.from(document.querySelectorAll('a')).map(a => a.href).filter(h => h.includes('/episode/'))")
         links = list(set(all_hrefs))
         links.sort(key=lambda x: int(x.split('/episode/')[-1]))
     else:
-        # Zaten bir bölüm linki
         links = [url]
         
     return safe_series, safe_season, links, is_season_url
@@ -98,23 +139,32 @@ def download_episode(p, ep_url, output_dir, ep_num):
     page.goto(ep_url)
     time.sleep(4)
     
-    # Try multiple fansub options
-    fansubs = ["SeiCode", "Eternal", "TenseiSubs", "Eiflex", "SomeSub", "NovZon", "MDSubs"]
-    clicked = False
+    # Dinamik fansub tespiti
+    buttons = page.locator("button").all()
+    fs_buttons = [b for b in buttons if "translate" in b.inner_text()]
     
-    for fs in fansubs:
-        btn = page.locator(f"text='{fs}'").first
-        if btn.is_visible():
-            console.print(f"Fansub seçiliyor: [green]{fs}[/green]")
-            try:
-                btn.click(force=True)
-                time.sleep(4)
-                clicked = True
+    target_btn = None
+    preferred = ["SeiCode", "Eternal", "SomeSub", "TenseiSubs", "AprilisSubs", "HolySubs", "Eiflex", "NovZon"]
+    for pref in preferred:
+        for b in fs_buttons:
+            if pref.lower() in b.inner_text().lower():
+                target_btn = b
                 break
-            except:
-                pass
-                
-    if not clicked:
+        if target_btn:
+            break
+            
+    if not target_btn and fs_buttons:
+        target_btn = fs_buttons[0]
+        
+    if target_btn:
+        fs_name = target_btn.inner_text().replace('\n', ' ').strip()
+        console.print(f"Fansub seçiliyor: [green]{fs_name}[/green]")
+        try:
+            target_btn.click(force=True)
+            time.sleep(4)
+        except Exception:
+            pass
+    else:
         console.print("[yellow]Özel fansub butonu bulunamadı, varsayılan kaynak deneniyor...[/yellow]")
         
     # Iframe src al
@@ -124,18 +174,17 @@ def download_episode(p, ep_url, output_dir, ep_num):
     browser.close()
     
     if not valid_iframes:
-        console.print(f"[red]Bölüm {ep_num} için uygun iframe bulunamadı.[/red]")
+        console.print(f"[red]Bölüm {ep_num} için uygun video çerçevesi (iframe) bulunamadı.[/red]")
         return False
         
     iframe_url = valid_iframes[0]
-    console.print(f"Iframe bulundu: [dim]{iframe_url}[/dim]")
+    console.print(f"Video sunucusu bulundu: [dim]{iframe_url}[/dim]")
     
-    # Videoyu Iframe'den çıkar
-    mp4_urls = get_mp4_from_iframe(p, iframe_url)
+    # Videoyu en yüksek kalitede çıkar
+    target_url = get_best_video_url(p, iframe_url)
     
-    if mp4_urls:
-        target_url = mp4_urls[0]
-        console.print(f"[bold green]Video kaynağı yakalandı![/bold green] [dim]{target_url}[/dim]")
+    if target_url:
+        console.print(f"[bold green]Video kaynağı yakalandı![/bold green]")
         
         out_filename = os.path.join(output_dir, f"Episode_{int(ep_num):02d}.%(ext)s")
         
@@ -225,8 +274,9 @@ def main():
         else:
             links_to_download = links
             
-        # Dizin yapısını oluştur: downloads / Dizi Adı / Sezon
-        target_dir = os.path.join(args.output, series_name, season_name)
+        # Dizin yapısını oluştur: output / Dizi Adı / Sezon
+        base_output = os.path.normpath(args.output)
+        target_dir = os.path.join(base_output, series_name, season_name)
         os.makedirs(target_dir, exist_ok=True)
         console.print(f"Kayıt konumu: [bold]{target_dir}[/bold]")
         
